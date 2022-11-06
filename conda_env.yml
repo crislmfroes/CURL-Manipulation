@@ -1,18 +1,20 @@
 name: curl
 channels:
   - defaults
+  - pytorch
 dependencies:
-  - python=3.6
+  - python=3.8
   - pytorch
   - torchvision
-  - cudatoolkit=9.2
+  - cudatoolkit=11.3
   - absl-py
   - pyparsing
-  - pillow=6.1
+  - pillow
   - pip:
     - termcolor
-    - git+git://github.com/deepmind/dm_control.git
-    - git+git://github.com/1nadequacy/dmc2gym.git
+    - dm_control
+    - git+https://github.com/1nadequacy/dmc2gym.git
+    - mujoco
     - tb-nightly
     - imageio
     - imageio-ffmpeg

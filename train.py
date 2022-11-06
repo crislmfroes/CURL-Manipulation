@@ -155,23 +155,31 @@ def main():
     if args.seed == -1: 
         args.__dict__["seed"] = np.random.randint(1,1000000)
     utils.set_seed_everywhere(args.seed)
-    env = dmc2gym.make(
-        domain_name=args.domain_name,
-        task_name=args.task_name,
-        seed=args.seed,
-        visualize_reward=False,
-        from_pixels=(args.encoder_type == 'pixel'),
-        height=args.pre_transform_image_size,
-        width=args.pre_transform_image_size,
-        frame_skip=args.action_repeat
-    )
+    if args.domain_name == 'pybullet':
+        import gym
+        import pybullet_envs
+        env = gym.make(args.task_name, width=args.pre_transform_image_size, height=args.pre_transform_image_size, renders=False)
+        env = utils.ReorderObs(env, (2, 1, 0))
+        env = gym.wrappers.TimeLimit(env, 8)
+        print(env.reset().shape)
+    else:
+        env = dmc2gym.make(
+            domain_name=args.domain_name,
+            task_name=args.task_name,
+            seed=args.seed,
+            visualize_reward=False,
+            from_pixels=(args.encoder_type == 'pixel'),
+            height=args.pre_transform_image_size,
+            width=args.pre_transform_image_size,
+            frame_skip=args.action_repeat
+        )
  
     env.seed(args.seed)
 
     # stack several consecutive frames together
     if args.encoder_type == 'pixel':
         env = utils.FrameStack(env, k=args.frame_stack)
-    
+
     # make directory
     ts = time.gmtime() 
     ts = time.strftime("%m-%d", ts)    

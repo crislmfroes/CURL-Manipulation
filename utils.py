@@ -49,7 +49,7 @@ def module_hash(module):
 
 def make_dir(dir_path):
     try:
-        os.mkdir(dir_path)
+        os.makedirs(dir_path)
     except OSError:
         pass
     return dir_path
@@ -78,8 +78,8 @@ class ReplayBuffer(Dataset):
         # the proprioceptive obs is stored as float32, pixels obs as uint8
         obs_dtype = np.float32 if len(obs_shape) == 1 else np.uint8
         
-        self.obses = np.empty((capacity, *obs_shape), dtype=obs_dtype)
-        self.next_obses = np.empty((capacity, *obs_shape), dtype=obs_dtype)
+        self.obses = np.empty(shape=(capacity, *obs_shape), dtype=obs_dtype)
+        self.next_obses = np.empty(shape=(capacity, *obs_shape), dtype=obs_dtype)
         self.actions = np.empty((capacity, *action_shape), dtype=np.float32)
         self.rewards = np.empty((capacity, 1), dtype=np.float32)
         self.not_dones = np.empty((capacity, 1), dtype=np.float32)
@@ -196,7 +196,30 @@ class ReplayBuffer(Dataset):
         return obs, action, reward, next_obs, not_done
 
     def __len__(self):
-        return self.capacity 
+        return self.capacity
+
+class ReorderObs(gym.Wrapper):
+    def __init__(self, env, ordering):
+        gym.Wrapper.__init__(self, env)
+        self._ordering = np.array(ordering)
+        shp = env.observation_space.shape
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=np.array(shp)[self._ordering],
+            dtype=env.observation_space.dtype
+        )
+
+    def reset(self):
+        obs = self.env.reset()
+        return self._preprocess_obs(obs)
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        return self._preprocess_obs(obs), reward, done, info
+
+    def _preprocess_obs(self, obs):
+        return obs.transpose(self._ordering)
 
 class FrameStack(gym.Wrapper):
     def __init__(self, env, k):
