@@ -8,8 +8,8 @@ import sys
 import random
 import time
 import json
-import dmc2gym
 import copy
+import tqdm
 
 import utils
 from logger import Logger
@@ -17,6 +17,10 @@ from video import VideoRecorder
 
 from curl_sac import CurlSacAgent
 from torchvision import transforms
+
+import gym
+import yaml
+
 
 
 def parse_args():
@@ -29,6 +33,10 @@ def parse_args():
     parser.add_argument('--image_size', default=84, type=int)
     parser.add_argument('--action_repeat', default=1, type=int)
     parser.add_argument('--frame_stack', default=3, type=int)
+    parser.add_argument('--n_envs', default=32, type=int)
+    parser.add_argument('--max_episode_steps', default=200, type=int)
+
+
     # replay buffer
     parser.add_argument('--replay_buffer_capacity', default=100000, type=int)
     # train
@@ -56,7 +64,7 @@ def parse_args():
     parser.add_argument('--encoder_feature_dim', default=50, type=int)
     parser.add_argument('--encoder_lr', default=1e-3, type=float)
     parser.add_argument('--encoder_tau', default=0.05, type=float)
-    parser.add_argument('--num_layers', default=4, type=int)
+    parser.add_argument('--num_layers', default=50, type=int)
     parser.add_argument('--num_filters', default=32, type=int)
     parser.add_argument('--curl_latent_dim', default=128, type=int)
     # sac
@@ -78,12 +86,13 @@ def parse_args():
     return args
 
 
-def evaluate(env, agent, video, num_episodes, L, step, args):
+def evaluate(env, agent, video, num_episodes, L, step, args, config):
     all_ep_rewards = []
 
     def run_eval_loop(sample_stochastically=True):
         start_time = time.time()
         prefix = 'stochastic_' if sample_stochastically else ''
+        total_success = 0.0
         for i in range(num_episodes):
             obs = env.reset()
             video.init(enabled=(i == 0))
@@ -91,16 +100,21 @@ def evaluate(env, agent, video, num_episodes, L, step, args):
             episode_reward = 0
             while not done:
                 # center crop image
+                obs = dict([(k, np.expand_dims(obs[k], axis=0)) for k in obs.keys()])
                 if args.encoder_type == 'pixel':
-                    obs = utils.center_crop_image(obs,args.image_size)
+                    obs = utils.center_crop_image(obs,args.image_size, config['image_fields'])
                 with utils.eval_mode(agent):
                     if sample_stochastically:
                         action = agent.sample_action(obs)
                     else:
                         action = agent.select_action(obs)
-                obs, reward, done, _ = env.step(action)
+                #print(action)
+                #print(type(env))
+                obs, reward, done, info = env.step(action.flatten())
                 video.record(env)
-                episode_reward += reward
+                episode_reward += np.sum(reward)
+                if done:
+                    total_success += 1.0*info[config['success_key']]
 
             video.save('%d.mp4' % step)
             L.log('eval/' + prefix + 'episode_reward', episode_reward, step)
@@ -109,17 +123,20 @@ def evaluate(env, agent, video, num_episodes, L, step, args):
         L.log('eval/' + prefix + 'eval_time', time.time()-start_time , step)
         mean_ep_reward = np.mean(all_ep_rewards)
         best_ep_reward = np.max(all_ep_rewards)
+        mean_success = total_success / float(num_episodes)
         L.log('eval/' + prefix + 'mean_episode_reward', mean_ep_reward, step)
         L.log('eval/' + prefix + 'best_episode_reward', best_ep_reward, step)
+        L.log('eval/' + prefix + 'success_rate', mean_success, step)
+        return mean_success
 
-    run_eval_loop(sample_stochastically=False)
+    success_rate = run_eval_loop(sample_stochastically=False)
     L.dump(step)
+    return success_rate
 
 
-def make_agent(obs_shape, action_shape, args, device):
+def make_agent(action_shape, args, device, config=None, image_size=84):
     if args.agent == 'curl_sac':
         return CurlSacAgent(
-            obs_shape=obs_shape,
             action_shape=action_shape,
             device=device,
             hidden_dim=args.hidden_dim,
@@ -144,8 +161,9 @@ def make_agent(obs_shape, action_shape, args, device):
             num_filters=args.num_filters,
             log_interval=args.log_interval,
             detach_encoder=args.detach_encoder,
-            curl_latent_dim=args.curl_latent_dim
-
+            curl_latent_dim=args.curl_latent_dim,
+            config=config,
+            image_size=image_size
         )
     else:
         assert 'agent is not supported: %s' % args.agent
@@ -156,17 +174,48 @@ def main():
         args.__dict__["seed"] = np.random.randint(1,1000000)
     utils.set_seed_everywhere(args.seed)
     if args.domain_name == 'pybullet':
-        import gym
-        import pybullet_envs
-        env = gym.make(args.task_name, width=args.pre_transform_image_size, height=args.pre_transform_image_size, renders=False)
+        from envs.kuka_grasping import KukaDiverseObjectEnv
+        env = KukaDiverseObjectEnv(height=args.pre_transform_image_size, width=args.pre_transform_image_size, renders=False, actionRepeat=args.action_repeat, maxSteps=8)
         env = utils.ReorderObs(env, (2, 1, 0))
         env = gym.wrappers.TimeLimit(env, 8)
-        print(env.reset().shape)
+        #print(env.reset().shape)
+    elif args.domain_name == 'habitat':
+        import habitat.utils.gym_definitions
+        with open('configs/HabitatPick-v1.yaml') as f:
+            config = yaml.load(f, yaml.FullLoader)
+        def make_individual_env(env_name):
+            env = gym.make(env_name)
+            for field in config['image_fields']:
+                env = utils.ReorderObs(env, field, args.pre_transform_image_size)
+            env = gym.wrappers.TimeLimit(env, 200)
+            env = utils.ActionRepeat(env, frame_skip=args.action_repeat)
+            if args.encoder_type == 'multi_input':
+                for field in config['image_fields']:
+                    env = utils.FrameStack(env, k=args.frame_stack, obs_field=field, image_size=args.pre_transform_image_size)
+            print(env.action_space)
+            print(env.observation_space)
+            return env
+        dummy_env = make_individual_env('HabitatPick-v0')
+        print(dummy_env.observation_space)
+        print(dummy_env.action_space)
+        #eval_env = gym.vector.SyncVectorEnv([lambda: make_individual_env('HabitatRenderPick-v0'),]*1, observation_space=dummy_env.observation_space, action_space=dummy_env.action_space)
+        #eval_env = gym.wrappers.TimeLimit(eval_env, 200)
+        eval_env = make_individual_env('HabitatRenderPick-v0')
+        env = gym.vector.SyncVectorEnv([lambda: make_individual_env('HabitatPick-v0'),]*args.n_envs, observation_space=dummy_env.observation_space, action_space=dummy_env.action_space)
+        #env = gym.wrappers.TimeLimit(env, 200)
+        #print(env._check_spaces())
+        #env = make_individual_env()
+        print(env.action_space)
+        print(env.observation_space)
+
+        #print(env.observation_space)
+        #print(env.reset())
+        #exit()
+
     else:
-        env = dmc2gym.make(
-            domain_name=args.domain_name,
-            task_name=args.task_name,
-            seed=args.seed,
+        env_name = "dmc:{}-{}-v1".format(args.domain_name.capitalize(), args.task_name)
+        env = gym.make(
+            env_name,
             visualize_reward=False,
             from_pixels=(args.encoder_type == 'pixel'),
             height=args.pre_transform_image_size,
@@ -177,8 +226,9 @@ def main():
     env.seed(args.seed)
 
     # stack several consecutive frames together
-    if args.encoder_type == 'pixel':
-        env = utils.FrameStack(env, k=args.frame_stack)
+    #if args.encoder_type == 'multi_input':
+    #    for field in config['image_fields']:
+    #        env = utils.FrameStack(env, k=args.frame_stack, obs_field=field)
 
     # make directory
     ts = time.gmtime() 
@@ -200,88 +250,117 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    action_shape = env.action_space.shape
+    action_shape = env.action_space.shape[-1:]
 
-    if args.encoder_type == 'pixel':
-        obs_shape = (3*args.frame_stack, args.image_size, args.image_size)
-        pre_aug_obs_shape = (3*args.frame_stack,args.pre_transform_image_size,args.pre_transform_image_size)
+    '''if args.encoder_type == 'pixel':
+        obs_shape = (1*args.frame_stack, args.image_size, args.image_size)
+        pre_aug_obs_shape = (1*args.frame_stack,args.pre_transform_image_size,args.pre_transform_image_size)
     else:
         obs_shape = env.observation_space.shape
-        pre_aug_obs_shape = obs_shape
+        pre_aug_obs_shape = obs_shape'''
+
+    if args.encoder_type == 'multi_input':
+        obs_shape = None
+        pre_aug_obs_shape=None
 
     replay_buffer = utils.ReplayBuffer(
-        obs_shape=pre_aug_obs_shape,
         action_shape=action_shape,
         capacity=args.replay_buffer_capacity,
         batch_size=args.batch_size,
         device=device,
         image_size=args.image_size,
+        config=config,
+        n_envs=args.n_envs
     )
 
     agent = make_agent(
-        obs_shape=obs_shape,
         action_shape=action_shape,
         args=args,
-        device=device
+        device=device,
+        config=config,
+        image_size=args.image_size
     )
 
     L = Logger(args.work_dir, use_tb=args.save_tb)
 
-    episode, episode_reward, done = 0, 0, True
+    episode, episode_reward, dones = 0, 0, [True,]*args.n_envs
     start_time = time.time()
-
-    for step in range(args.num_train_steps):
+    reset_counter = 0
+    max_success_rate = 0.0
+    for step in tqdm.trange(args.num_train_steps):
         # evaluate agent periodically
 
         if step % args.eval_freq == 0:
             L.log('eval/episode', episode, step)
-            evaluate(env, agent, video, args.num_eval_episodes, L, step,args)
+            #print(step)
+            success_rate = evaluate(eval_env, agent, video, args.num_eval_episodes, L, step,args, config)
+            #obses = env.reset()
             if args.save_model:
                 agent.save_curl(model_dir, step)
             if args.save_buffer:
                 replay_buffer.save(buffer_dir)
+            if success_rate > max_success_rate:
+                max_success_rate = success_rate
+                if args.save_model:
+                    agent.save_curl(model_dir, "best")
 
-        if done:
-            if step > 0:
+        #print(dones)
+        if dones:
+            ''''if step > 0:
                 if step % args.log_interval == 0:
                     L.log('train/duration', time.time() - start_time, step)
-                    L.dump(step)
-                start_time = time.time()
-            if step % args.log_interval == 0:
-                L.log('train/episode_reward', episode_reward, step)
+                    L.dump(step)'''
+            start_time = time.time()
+            L.log('train/duration', time.time() - start_time, step)
+            L.log('train/episode_reward', episode_reward, step)
+            L.dump(step)
 
-            obs = env.reset()
-            done = False
-            episode_reward = 0
-            episode_step = 0
-            episode += 1
-            if step % args.log_interval == 0:
-                L.log('train/episode', episode, step)
+            obses = env.reset()
+            reset_counter = 0
+            dones = [False,]*args.n_envs
+            previous_dones = [False,]*args.n_envs
+            episode_rewards = np.array([0.0,]*args.n_envs)
+            episode_steps = np.array([0,]*args.n_envs)
+            episode += args.n_envs
+
 
         # sample action for data collection
         if step < args.init_steps:
-            action = env.action_space.sample()
+            actions = env.action_space.sample()
+            #print('random: ', actions)
         else:
             with utils.eval_mode(agent):
-                action = agent.sample_action(obs)
+                actions = agent.sample_action(utils.center_crop_image(obses, args.image_size, config['image_fields']))
+            #print('agent: ', actions)
+
+
+
+        next_obses, rewards, dones, _ = env.step(actions)
+        #reset_counter += 1
 
         # run training update
         if step >= args.init_steps:
             num_updates = 1 
             for _ in range(num_updates):
-                agent.update(replay_buffer, L, step)
-
-        next_obs, reward, done, _ = env.step(action)
+                agent.update(replay_buffer, L, step, should_log=dones)
 
         # allow infinit bootstrap
-        done_bool = 0 if episode_step + 1 == env._max_episode_steps else float(
-            done
-        )
-        episode_reward += reward
-        replay_buffer.add(obs, action, reward, next_obs, done_bool)
+        done_bools = [0 if episode_steps[i] + 1 == args.max_episode_steps else float(
+            dones[i]
+        ) for i in range(args.n_envs)]
+        episode_rewards += rewards
+        episode_reward = sum(episode_rewards)
+        for i in range(args.n_envs):
+            #print(obs['robot_head_depth'].shape)
+            replay_buffer.add(obses, actions, rewards, next_obses, done_bools, previous_dones)
 
-        obs = next_obs
-        episode_step += 1
+        obses = next_obses
+        episode_steps += args.n_envs
+
+        previous_dones = dones
+
+        '''if step % args.log_interval == 0:
+            L.log('train/episode', episode, step)'''
 
 
 if __name__ == '__main__':

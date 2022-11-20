@@ -1,0 +1,48 @@
+image_fields: [robot_head_depth, robot_arm_depth]
+success_key: rearrangepick_success
+#obs_shape, feature_dim, num_layers, num_filters, output_logits
+encoders:
+  - name: robot_head_depth
+    obs_shape: [4, 76, 76]
+    feature_dim: 50
+    num_layers: 4
+    output_logits: True
+    encoder_type: pixel
+    num_filters: 32
+    obs_dtype: float32
+    compress: True
+    image_size: 64
+  - name: robot_arm_depth
+    obs_shape: [4, 76, 76]
+    feature_dim: 50
+    num_layers: 4
+    output_logits: True
+    encoder_type: pixel
+    num_filters: 32
+    obs_dtype: float32
+    compress: True
+    image_size: 64
+  - name: obj_start_sensor
+    obs_shape: [3,]
+    encoder_type: identity
+    feature_dim: 3
+    obs_dtype: float32
+    compress: False
+  - name: joint
+    obs_shape: [7,]
+    encoder_type: identity
+    feature_dim: 7
+    obs_dtype: float32
+    compress: False
+  - name: is_holding
+    obs_shape: [1,]
+    encoder_type: identity
+    feature_dim: 1
+    obs_dtype: float32
+    compress: False
+  - name: relative_resting_position
+    obs_shape: [3,]
+    encoder_type: identity
+    feature_dim: 3
+    obs_dtype: float32
+    compress: False

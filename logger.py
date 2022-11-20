@@ -14,9 +14,9 @@ FORMAT_CONFIG = {
             ('episode', 'E', 'int'), ('step', 'S', 'int'),
             ('duration', 'D', 'time'), ('episode_reward', 'R', 'float'),
             ('batch_reward', 'BR', 'float'), ('actor_loss', 'A_LOSS', 'float'),
-            ('critic_loss', 'CR_LOSS', 'float'), ('curl_loss', 'CU_LOSS', 'float')
+            ('critic_loss', 'CR_LOSS', 'float'), ('curl_loss', 'CURL_LOSS', 'float')#, ('curl_robot_head_depth_loss', 'CURL_HEAD_DEPTH_LOSS', 'float'), ('curl_robot_arm_depth_loss', 'CURL_ARM_DEPTH_LOSS', 'float')
         ],
-        'eval': [('step', 'S', 'int'), ('episode_reward', 'ER', 'float')]
+        'eval': [('step', 'S', 'int'), ('episode_reward', 'ER', 'float'), ('mean_episode_reward', 'MR', 'float'), ('best_episode_reward', 'BR', 'float'), ('success_rate', 'SR', 'float')]
     }
 }
 

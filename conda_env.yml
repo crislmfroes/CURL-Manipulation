@@ -11,9 +11,10 @@ dependencies:
   - pyparsing
   - pillow
   - pip:
+    - gym==0.21.0
     - termcolor
     - dm_control
-    - git+https://github.com/1nadequacy/dmc2gym.git
+    - gym-dmc
     - mujoco
     - tb-nightly
     - imageio

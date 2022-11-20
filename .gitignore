@@ -6,3 +6,4 @@ scripts/run_*.sh
 test*
 *frame2state*
 *.mmap
+data
