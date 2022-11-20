@@ -121,9 +121,10 @@ class IdentityEncoder(nn.Module):
 class MultiInputEncoder(nn.Module):
     def __init__(self, feature_dim, config, output_logits=False, device='cuda'):
         super().__init__()
-        self.encoders = dict()
+        encoder_dict = dict()
         for encoder_config in config['encoders']:
-            self.encoders[encoder_config['name']] = make_encoder(**encoder_config).to(device)
+            encoder_dict[encoder_config['name']] = make_encoder(**encoder_config).to(device)
+        self.encoders = nn.ModuleDict(encoder_dict)
         self.feature_dim = feature_dim
         self.fc = nn.Linear(sum([encoder_config['feature_dim'] for encoder_config in config['encoders']]), self.feature_dim)
         self.ln = nn.LayerNorm(self.feature_dim)

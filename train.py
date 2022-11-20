@@ -48,6 +48,9 @@ def parse_args():
     # eval
     parser.add_argument('--eval_freq', default=1000, type=int)
     parser.add_argument('--num_eval_episodes', default=10, type=int)
+    parser.add_argument('--eval_only', default=False, type=bool)
+    parser.add_argument('--load_checkpoint', type=str)
+
     # critic
     parser.add_argument('--critic_lr', default=1e-3, type=float)
     parser.add_argument('--critic_beta', default=0.9, type=float)
@@ -86,16 +89,16 @@ def parse_args():
     return args
 
 
-def evaluate(env, agent, video, num_episodes, L, step, args, config):
+def evaluate(env, agent, video, num_episodes, L, step, args, config, record_all=False):
     all_ep_rewards = []
 
     def run_eval_loop(sample_stochastically=True):
         start_time = time.time()
         prefix = 'stochastic_' if sample_stochastically else ''
         total_success = 0.0
-        for i in range(num_episodes):
+        for i in tqdm.trange(num_episodes):
             obs = env.reset()
-            video.init(enabled=(i == 0))
+            video.init(enabled=(i == 0 or record_all))
             done = False
             episode_reward = 0
             while not done:
@@ -115,7 +118,8 @@ def evaluate(env, agent, video, num_episodes, L, step, args, config):
                 episode_reward += np.sum(reward)
                 if done:
                     total_success += 1.0*info[config['success_key']]
-
+            if record_all:
+                video.save('eval_all.mp4')
             video.save('%d.mp4' % step)
             L.log('eval/' + prefix + 'episode_reward', episode_reward, step)
             all_ep_rewards.append(episode_reward)
@@ -281,6 +285,10 @@ def main():
         image_size=args.image_size
     )
 
+    if args.load_checkpoint:
+        agent.load(args.load_checkpoint, "best")
+        agent.load_curl(args.load_checkpoint, "best")
+
     L = Logger(args.work_dir, use_tb=args.save_tb)
 
     episode, episode_reward, dones = 0, 0, [True,]*args.n_envs
@@ -288,6 +296,12 @@ def main():
     reset_counter = 0
     max_success_rate = 0.0
     for step in tqdm.trange(args.num_train_steps):
+
+        if args.eval_only:
+            L.log('eval/episode', episode, step)
+            evaluate(eval_env, agent, video, args.num_eval_episodes, L, step, args, config, args.eval_only)
+            break
+
         # evaluate agent periodically
 
         if step % args.eval_freq == 0:
@@ -296,12 +310,16 @@ def main():
             success_rate = evaluate(eval_env, agent, video, args.num_eval_episodes, L, step,args, config)
             #obses = env.reset()
             if args.save_model:
-                agent.save_curl(model_dir, step)
+                #agent.save(model_dir, step)
+                #agent.save_curl(model_dir, step)
+                agent.save(model_dir, "last")
+                agent.save_curl(model_dir, "last")
             if args.save_buffer:
                 replay_buffer.save(buffer_dir)
-            if success_rate > max_success_rate:
+            if success_rate >= max_success_rate:
                 max_success_rate = success_rate
                 if args.save_model:
+                    agent.save(model_dir, "best")
                     agent.save_curl(model_dir, "best")
 
         #print(dones)
@@ -340,7 +358,7 @@ def main():
 
         # run training update
         if step >= args.init_steps:
-            num_updates = 1 
+            num_updates = 1
             for _ in range(num_updates):
                 agent.update(replay_buffer, L, step, should_log=dones)
 
