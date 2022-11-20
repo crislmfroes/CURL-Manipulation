@@ -120,8 +120,8 @@ class QFunction(nn.Module):
         super().__init__()
 
         self.trunk = nn.Sequential(
-            nn.Linear(obs_dim + action_dim, hidden_dim), nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(obs_dim + action_dim, hidden_dim), nn.Dropout(), nn.LayerNorm(hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.Dropout(), nn.LayerNorm(hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
 
@@ -509,7 +509,10 @@ class CurlSacAgent(object):
         if should_log:
             L.log('train/batch_reward', reward.mean(), step)
 
-        self.update_critic(obs, action, reward, next_obs, not_done, L, step, replay_buffer, should_log=should_log)
+        critic_updates = 20
+
+        for _ in range(critic_updates):
+            self.update_critic(obs, action, reward, next_obs, not_done, L, step, replay_buffer, should_log=should_log)
 
         if step % self.actor_update_freq == 0:
             self.update_actor_and_alpha(obs, L, step, replay_buffer, should_log=should_log)
@@ -559,5 +562,10 @@ class CurlSacAgent(object):
         )
         self.critic.load_state_dict(
             torch.load('%s/critic_%s.pt' % (model_dir, step))
+        )
+
+    def load_curl(self, model_dir, step):
+        self.CURL.load_state_dict(
+            torch.load('%s/curl_%s.pt' % (model_dir, step))
         )
  
